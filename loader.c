@@ -20,11 +20,15 @@
 */
 enum Type {NoType, File, Func, Object}; // Symbol Types
 
+enum Binding {Local, Global, Weak};     // Types of Binding . A symbol's binding determines the linkage visibility and behavior. 
+
 struct SymbolHelper {
     char* name;                 // este estaria dado por StringTable[st_name]
     unsigned int addr;          // este por st_value
+    int size;                   // st_size
 
-    enum Type type;
+    enum Type type;             // estos dos por st_info + Macros 
+    enum Binding bind;
 };
 
 struct SymbolHandle {
@@ -52,17 +56,77 @@ FILE* open_elf_file(const char *pathname, const char *mode) {
     assert(fptr != NULL);
 }
 
+#define MAX_STR_LEN 7
+void type_of_symbol_to_string(enum Type type, char** str_dest) {
+    switch (type) {
+        case NoType:
+            *str_dest = "NOTYPE";
+            break;
+        case File:
+            *str_dest = "FILE";
+            break;
+        case Func:
+            *str_dest = "FUNC";
+            break;
+        case Object:
+            *str_dest = "OBJECT";
+            break;
+    }
+}
 
-unsigned int get_addr_of_symbol(struct ElfHandle* handle, const char* symbol_name) {
+void print_type_of_symbol(enum Type type) {
+     char** type_str = malloc(MAX_STR_LEN * sizeof(char*));
+    type_of_symbol_to_string(type, type_str);
+    printf("%s\n", *type_str);
+    free(type_str);
+}
+
+void bind_of_symbol_to_string(enum Binding bind, char** str_dest) {
+    switch (bind) {
+        case Global:
+            *str_dest = "GLOBAL"; 
+            break;
+        case Local:
+            *str_dest = "LOCAL"; 
+            break;
+        case Weak:
+            *str_dest = "WEAK";
+            break;
+    }
+}
+
+void print_bind_of_symbol(enum Binding bind) {
+    char** bind_str = malloc(MAX_STR_LEN * sizeof(char*));
+    bind_of_symbol_to_string(bind, bind_str);
+    printf("%s\n", *bind_str);
+    free(bind_str);
+}
+
+
+// Many symbols have associated sizes. For example, a data object's size is the number of bytes
+// contained in the object. This member holds 0 if the symbol has no size or an unknown size.
+
+// info debe ser: "size", "addr" o "type"
+unsigned int get_info_of_symbol(struct ElfHandle* handle, const char* symbol_name, const char* info) {
+
     for (size_t i = 0; i < handle->symbol_handle->number_of_symbols; i++) {
         struct SymbolHelper* sym = handle->symbol_handle->symbols + i;
         if (strcmp(sym->name, symbol_name) == 0) {
-            return sym->addr;
+            if (strcmp(info, "size") == 0) {
+                return sym->size;
+            } else if (strcmp(info, "addr") == 0) {
+                return sym->addr;
+            } else if (strcmp(info, "type") == 0) {
+                return (unsigned int)sym->type;
+            } else if (strcmp(info, "bind") == 0) {
+                return (unsigned int)sym->bind;
+            } else {
+                return 0;
+            }
         }
     }
     return 0;
 }
-
 
 void print_elf_header(Elf32_Ehdr* header) {
     printf("ELF Header:\n");
@@ -151,6 +215,26 @@ void build_string_table_symbols(struct ElfHandle* handle, int idx) {
     }
 }
 
+void build_string_table_sections(struct ElfHandle* handle) {
+
+    // el header del ELF tiene este campo:
+    //      e_shstrndx
+    // This member holds the section header table index of the entry associated with
+    // the section name string table. 
+    // Entonces para obtener los nombres de las sections indexaremos nuestra tabla de sections usando ese valor
+    Elf32_Shdr sh_strtab = handle->section_header_table[handle->header.e_shstrndx];
+    assert(sh_strtab.sh_type == SHT_STRTAB);
+            
+    handle->string_table_sections = malloc(sh_strtab.sh_size);
+
+    fseek(handle->fptr, sh_strtab.sh_offset, SEEK_SET);
+
+    size_t bytes_read = 0;
+    bytes_read = fread(handle->string_table_sections, sh_strtab.sh_size, 1, handle->fptr);
+    assert(bytes_read == 1);
+        
+}
+
 void build_symbol_table(struct ElfHandle* handle) {
 
     for (size_t i = 0; i < handle->header.e_shnum; i++) {
@@ -162,20 +246,16 @@ void build_symbol_table(struct ElfHandle* handle) {
             // la spec nos dice que el field sh_link nos da el indice de su StringTable 
             build_string_table_symbols(handle, sh.sh_link);
 
-
             // the .symtab section is simply an array of the Elf32_Sym structs
             // cada entry en esta section (por ser de tipo SymTab) tiene un tamano dado por sh_entsize
             // entonces para saber cuantas entries tenemos en esta section hacemos:
             size_t number_of_entries_in_symbol_table = sh.sh_size / sh.sh_entsize;
-
-            //printf("number_of_entries_in_symbol_table: %zu\n", number_of_entries_in_symbol_table);
 
             // primero nos tenemos que traer a memoria la section en si
             fseek(handle->fptr, sh.sh_offset, SEEK_SET);
 
             size_t bytes_read_section = 0;
 
-            //Elf32_Sym symtab[number_of_entries_in_symbol_table];
             handle->symbol_table = malloc(number_of_entries_in_symbol_table * sizeof(Elf32_Sym));
 
             for (size_t j = 0; j < number_of_entries_in_symbol_table; j++) {
@@ -184,16 +264,6 @@ void build_symbol_table(struct ElfHandle* handle) {
                 assert(bytes_read_section == 1);
             }
             
-            //ahora podemos iterar sobre las entries de la section (cada una sera de tipo Elf32_Sym)
-            /*
-            for (size_t j = 0; j < number_of_entries_in_symbol_table; j++) {
-                Elf32_Sym* st_entry = handle->symbol_table + j;
-                printf("st_name: %s\n", handle->string_table_symbols + st_entry->st_name);
-                printf("st_value: %p\n", (void*)st_entry->st_value);
-                printf("---------\n");
-            }
-            */
-
             handle->symbol_handle = malloc(sizeof(struct SymbolHandle));
             memset(handle->symbol_handle, 0, sizeof(struct SymbolHandle));
 
@@ -229,10 +299,24 @@ void build_symbol_table(struct ElfHandle* handle) {
                         printf("HIPROC");
                         break;
                 }
+                enum Binding bind;
+                switch (ELF32_ST_BIND(st_entry->st_info)) {
+                    case 0:
+                        bind = Local;
+                        break;
+                    case 1:
+                        bind = Global;
+                        break;
+                    case 2:
+                        bind = Weak;
+                        break;
+                }
 
                 handle->symbol_handle->symbols[j] = (struct SymbolHelper){.name =  handle->string_table_symbols + st_entry->st_name,
                                                                           .addr = st_entry->st_value,
-                                                                          .type = type};
+                                                                          .type = type,
+                                                                          .bind = bind,
+                                                                          .size = st_entry->st_size};
 
 
 
@@ -243,109 +327,7 @@ void build_symbol_table(struct ElfHandle* handle) {
         }
     }
 }
-/*
-Symbol table '.symtab' contains 8 entries:
-   Num:    Value  Size Type    Bind   Vis      Ndx Name
-     0: 00000000     0 NOTYPE  LOCAL  DEFAULT  UND 
-     1: 00000000     0 FILE    LOCAL  DEFAULT  ABS test.c
-     2: 08049000    19 FUNC    GLOBAL DEFAULT    1 f
-     3: 0804c000     4 OBJECT  GLOBAL DEFAULT    3 c
-     4: 0804c000     0 NOTYPE  GLOBAL DEFAULT    3 __bss_start
-     5: 08049013    22 FUNC    GLOBAL DEFAULT    1 main
-     6: 0804c000     0 NOTYPE  GLOBAL DEFAULT    3 _edata
-     7: 0804c004     0 NOTYPE  GLOBAL DEFAULT    3 _end
-*/
 
-struct SymbolHandle sym_hdle;
-
-
-void print_symbol_table(struct ElfHandle* handle) {
-    printf("Symbol table '.symtab' contains %d entries:\n",8);
-    printf("Num:       Value         Size      Type      Bind     Vis      Ndx    Name\n");
-    // the first entry is reserved, and it looks like this:
-    printf("0   0x00000000    0    NOTYPE     LOCAL    DEFAULT   UND\n");
-    for(size_t i = 1; i < 8; i++) {
-        Elf32_Sym* st_entry = handle->symbol_table + i;
-        printf("%d", i);
-/*
-        if (i == 2) {
-            size_t len = strlen(handle->string_table_symbols + st_entry->st_name);
-            char* name = malloc(len+1);
-            memcpy(name, handle->string_table_symbols + st_entry->st_name, len);
-            sym_hdle = (struct SymbolHandle){.name = name , .addr = st_entry->st_value};
-        }
-        */
-
-        if (st_entry->st_value == 0) {
-            printf("     0x00000000");
-        } else {
-            printf("     %p", st_entry->st_value);
-        }
-
-        printf("                %d", st_entry->st_size);
-
-        switch (ELF32_ST_BIND(st_entry->st_info)) {
-            case 0:
-                printf("            LOCAL");
-                break;
-            case 1:
-                printf("            GLOBAL");
-                break;
-            case 2:
-                printf("            WEAK");
-                break;
-            case 13:
-                printf("            LOPROC");
-                break;
-            case 15:
-                printf("            HIPROC");
-                break;
-        }
-
-        switch (ELF32_ST_TYPE(st_entry->st_info)) {
-            case 0:
-                printf("            NOTYPE");
-                break;
-            case 1:
-                printf("            OBJECT");
-                break;
-            case 2:
-                printf("            FUNC");
-                break;
-            case 3:
-                printf("            SECTION");
-                break;
-            case 4:
-                printf("            FILE");
-                break;
-            case 13:
-                printf("            LOPROC");
-                break;
-            case 15:
-                printf("            HIPROC");
-                break;
-        }
-
-        switch (st_entry->st_shndx) {
-            case 0:
-                printf("                    UND");
-                break;
-            case 0xfff1:
-                printf("                    ABS");
-                break;
-            case 0xfff2:
-                printf("                    COMMON");
-                break;
-            default:
-                printf("                    %d", st_entry->st_shndx);
-        }
-
-        printf("              %s", handle->string_table_symbols + st_entry->st_name);
-
-        printf("\n");
-    }
-    printf("\n");
-}
 
 struct ElfHandle* build_elf_handle(FILE* fptr) {
     struct ElfHandle* handle = (struct ElfHandle*)malloc(sizeof(struct ElfHandle));
@@ -396,11 +378,30 @@ struct ElfHandle* build_elf_handle(FILE* fptr) {
     return handle;
 }
 
-void free_elf_handle(struct ElfHandle* handle) {        // TODO: fclose y free symbol table
+
+void free_elf_handle(struct ElfHandle* handle) {        
     free(handle->program_header_table);
     handle->program_header_table = NULL;
     free(handle->section_header_table);
     handle->section_header_table = NULL;
+
+    free(handle->symbol_table);
+    handle->symbol_table = NULL;
+
+    free(handle->symbol_handle->symbols);
+    handle->symbol_handle->symbols = NULL;
+
+    free(handle->symbol_handle);
+    handle->symbol_handle = NULL;
+
+    free(handle->string_table_symbols);
+    handle->string_table_symbols = NULL;
+
+    free(handle->string_table_sections);
+    handle->string_table_sections = NULL;
+
+    fclose(handle->fptr);
+
     free(handle);
     handle = NULL;
 }
@@ -455,8 +456,83 @@ void* load_segment(Elf32_Phdr* ph, FILE* fptr) {
 
 void load_elf(struct ElfHandle* handle) {
     for (size_t i = 0; i < handle->header.e_phnum; i++) {
-        load_segment(&(handle->program_header_table[i]), handle->fptr);
+
+        void* ptr_to_segment = load_segment(&(handle->program_header_table[i]), handle->fptr);
+
+        // quizas tengamos un segment con memsz > filesz (seguramente para la section .bss), en ese caso
+        // nos encargamos de poner todo 0 en esa memoria:
+        if (handle->program_header_table[i].p_memsz > handle->program_header_table[i].p_filesz) {
+            //void *ptr = (void*)ptr_to_segment + handle->program_header_table[i].p_offset + handle->program_header_table[i].p_filesz;
+            //printf("ptr: %p\n", ptr_to_segment + handle->program_header_table[i].p_filesz);
+            memset((void*)ptr_to_segment + handle->program_header_table[i].p_filesz,
+                     0,
+                     handle->program_header_table[i].p_memsz - handle->program_header_table[i].p_filesz);
+            
+        }
+
     }
+}
+
+/*
+Expectativa:
+
+Symbol table '.symtab' contains 8 entries:
+   Num:    Value  Size Type    Bind   Vis      Ndx Name
+     0: 00000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 00000000     0 FILE    LOCAL  DEFAULT  ABS test.c
+     2: 08049000    19 FUNC    GLOBAL DEFAULT    1 f
+     3: 0804c000     4 OBJECT  GLOBAL DEFAULT    3 c
+     4: 0804c000     0 NOTYPE  GLOBAL DEFAULT    3 __bss_start
+     5: 08049013    22 FUNC    GLOBAL DEFAULT    1 main
+     6: 0804c000     0 NOTYPE  GLOBAL DEFAULT    3 _edata
+     7: 0804c004     0 NOTYPE  GLOBAL DEFAULT    3 _end
+
+Realidad:
+*/
+void print_symbol_table(struct ElfHandle* handle) {
+    struct SymbolHandle* sym_hndle = handle->symbol_handle;
+
+    printf("Symbol table '.symtab' contains %d entries:\n", sym_hndle->number_of_symbols);
+
+    printf(" %-10s%-15s%-10s%-10s%-10s%-10s%-10s%-5s\n", "Num", "Value", "Size", "Type", "Bind", "Vis", "Ndx", "Name"); 
+    //printf("%-25s%-20s%-10.2f%-10.2f%-10.2f\n", name.c_str(), title.c_str(), gross, tax, net);
+
+    for (size_t i = 0; i < sym_hndle->number_of_symbols; i++) {
+        struct SymbolHelper sym = sym_hndle->symbols[i];
+
+        // Num:
+        printf(" %-10d", i); 
+        // Value:
+        if (sym.addr == 0) {
+           printf(" %-15s", "0x00000000"); 
+        } else {
+            printf(" %-15p", (void*)sym.addr); 
+        }
+        // Size:
+        printf(" %-8d", sym.size); 
+        // Type:
+        char** type_str = malloc(7 * sizeof(char*));
+        type_of_symbol_to_string(sym.type, type_str);
+        printf(" %-10s", *type_str); 
+        free(type_str);
+        // 7 porque es el maximo len de los strings correspondientes . Queda muy feo igual.
+        // Bind:
+        char** bind_str = malloc(7 * sizeof(char*));
+        bind_of_symbol_to_string(sym.bind, bind_str);
+        printf(" %-10s", *bind_str); 
+        free(bind_str);
+
+        // Vis:
+        printf(" %-8s", "-"); 
+        // Ndx:
+        printf(" %-8s", "-"); 
+        // Name:
+        printf(" %-5s", sym.name); 
+        
+        printf("\n");
+    }
+
+    printf("\n");
 }
 
 int main(int argc, char** argv, char** envp) {
@@ -472,10 +548,10 @@ int main(int argc, char** argv, char** envp) {
     struct ElfHandle* handle = build_elf_handle(fptr);
 
     // debuggiemos
-    print_elf_header(&handle->header);
-    for (size_t i = 0; i < handle->header.e_phnum; i++) {
-        print_program_header(&(handle->program_header_table[i]));
-    }
+    //print_elf_header(&handle->header);
+    //for (size_t i = 0; i < handle->header.e_phnum; i++) {
+    //    print_program_header(&(handle->program_header_table[i]));
+    //}
 
     // lo cargamos
     load_elf(handle);
@@ -490,7 +566,7 @@ int main(int argc, char** argv, char** envp) {
     
     build_symbol_table(handle);
 
-    print_symbol_table(handle);
+    //print_symbol_table(handle);
 
     //printf("sym_hdle: NAME: %s, ADDR: %p\n", sym_hdle.name, (void*)sym_hdle.addr);
 
@@ -512,16 +588,19 @@ int main(int argc, char** argv, char** envp) {
     }
     */
 
-    unsigned int addr = get_addr_of_symbol(handle, "f");
+    //unsigned int addr = get_addr_of_symbol(handle, "f");
 
-    f = (void (*)(int, int))(addr);
-           
+    //f = (void (*)(int, int))(addr);
+
     //f(2, 1); 
 
-    unsigned int addr_c = get_addr_of_symbol(handle, "c");
+    printf("-------------------\n");
+    print_symbol_table(handle);
 
-    printf("ADDR of c : %p\n", (void*)addr_c);
-    
+    build_string_table_sections(handle);
+    //for (size_t i = 0; i < handle->header.e_shnum; i++) {
+    //    printf("%s\n", handle->string_table_sections + handle->section_header_table[i].sh_name);
+    //}
 
 
 
