@@ -374,6 +374,9 @@ struct ElfHandle* build_elf_handle(FILE* fptr) {
 // symbol table:
     build_symbol_table(handle);
 
+// string table de las sections
+    build_string_table_sections(handle);
+
 
     return handle;
 }
@@ -405,6 +408,10 @@ void free_elf_handle(struct ElfHandle* handle) {
     free(handle);
     handle = NULL;
 }
+
+
+#define PGSIZE 4096 
+#define PGROUNDDOWN(a) (((a)) & ~(PGSIZE - 1))
 
 void* load_segment(Elf32_Phdr* ph, FILE* fptr) {
 
@@ -440,15 +447,38 @@ void* load_segment(Elf32_Phdr* ph, FILE* fptr) {
     PF_R = 0x4
     */
 
-    void* ptr_to_exec_mem = mmap((void*)ph->p_vaddr, ph->p_memsz,
+    void* addr_to_mmap;
+    if ((ph->p_vaddr % PGSIZE) != 0) {
+        // si la vaddr no esta alineada, la alineamos, redondeando para abajo. 
+        // el mmap que estamos por hacer fallara si le pasamos una addr que no este
+        // alineada a PAGESIZE
+        addr_to_mmap = (void*)PGROUNDDOWN(ph->p_vaddr);
+    } else {
+        addr_to_mmap = (void*)ph->p_vaddr;
+    }
+    // lo mismo debe pasar con el offset
+    // man mmap dice: "offset must be a multiple of the page size..."
+    long int offset_to_mmap;
+    if ((ph->p_offset % PGSIZE) != 0) {
+        // si la vaddr no esta alineada, la alineamos, redondeando para abajo. 
+        // el mmap que estamos por hacer fallara si le pasamos una addr que no este
+        // alineada a PAGESIZE
+        offset_to_mmap = PGROUNDDOWN(ph->p_offset);
+    } else {
+        offset_to_mmap = ph->p_offset;
+    }
+
+    void* ptr_to_exec_mem = mmap(addr_to_mmap, ph->p_memsz,
                                 prot,
                                 MAP_PRIVATE, 
                                 fd,
-                                ph->p_offset);
+                                offset_to_mmap);
 
     if (ptr_to_exec_mem == MAP_FAILED) {
         printf("mmap failed: %s\n", strerror(errno));
-        //printf("(void*)ph->p_vaddr que rompe: %p\n", (void*)ph->p_vaddr);
+        printf("(void*)ph->p_vaddr que rompe: %p\n", addr_to_mmap);        
+    //} else {
+    //    printf("MAP!\n");
     }
 
     return ptr_to_exec_mem;
@@ -458,6 +488,11 @@ void load_elf(struct ElfHandle* handle) {
     for (size_t i = 0; i < handle->header.e_phnum; i++) {
 
         void* ptr_to_segment = load_segment(&(handle->program_header_table[i]), handle->fptr);
+        //printf("VOLVIO! %p\n", ptr_to_segment);
+
+        if (ptr_to_segment == NULL) {
+            continue;
+        }
 
         // quizas tengamos un segment con memsz > filesz (seguramente para la section .bss), en ese caso
         // nos encargamos de poner todo 0 en esa memoria:
@@ -469,7 +504,6 @@ void load_elf(struct ElfHandle* handle) {
                      handle->program_header_table[i].p_memsz - handle->program_header_table[i].p_filesz);
             
         }
-
     }
 }
 
@@ -511,13 +545,12 @@ void print_symbol_table(struct ElfHandle* handle) {
         // Size:
         printf(" %-8d", sym.size); 
         // Type:
-        char** type_str = malloc(7 * sizeof(char*));
+        char** type_str = malloc(MAX_STR_LEN * sizeof(char*));
         type_of_symbol_to_string(sym.type, type_str);
         printf(" %-10s", *type_str); 
         free(type_str);
-        // 7 porque es el maximo len de los strings correspondientes . Queda muy feo igual.
         // Bind:
-        char** bind_str = malloc(7 * sizeof(char*));
+        char** bind_str = malloc(MAX_STR_LEN * sizeof(char*));
         bind_of_symbol_to_string(sym.bind, bind_str);
         printf(" %-10s", *bind_str); 
         free(bind_str);
@@ -535,6 +568,101 @@ void print_symbol_table(struct ElfHandle* handle) {
     printf("\n");
 }
 
+
+#define NUM_STACK_PAGES 16
+
+void push_int(unsigned char** sp, int* value) {
+    //printf("SIZE %zu\n", sizeof(value));
+    //memset(*sp, 0, sizeof(value));
+    //(*sp)--;
+    *sp = *sp - 4;
+    memcpy(*sp, value, sizeof(*value));
+    //**sp = *value;
+}
+
+void push_str(unsigned char** sp, char** value) {
+
+    *sp = *sp - 4;
+    memcpy(*sp, *value, sizeof(char*));
+
+}
+
+void push_elem(unsigned char** sp, void** value) {
+
+    *sp = *sp - 4;
+    memcpy(*sp, value, sizeof(void*));
+
+}
+
+
+void* setup_stack(char* filename, void* entry_addr, int argc, char** argv, char** envp) {
+    // allocamos memoria para el stack:
+    size_t stack_size = NUM_STACK_PAGES * getpagesize(); 
+    void* addr_stack = mmap(NULL, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    unsigned char* stack_ptr = (unsigned char*) addr_stack + stack_size;
+
+    //printf("stack_ptr: %p\n", stack_ptr);      // 0xf7f24000
+    //printf("stack_ptr_top %p\n", addr_stack);  // 0xf7f14000
+
+    //int x = 7;
+    //push_int(&stack_ptr, &x);
+    //x = 5;
+    //push_int(&stack_ptr, &x);
+
+    int argc_cpy = argc;
+    push_int(&stack_ptr, &argc_cpy);
+
+    //printf("argv[0]: %s\n", argv[0]);
+    //printf("&argv[0]: %p\n", &argv[0]);
+
+    //push_elem(&stack_ptr, &argv[0]);
+
+    size_t i = 0;
+    while(argc > 0) {
+        printf("intentando con %d\n", i);
+        push_elem(&stack_ptr, &argv[i]);
+        i++;
+        argc--;
+    }
+    void* null_ptr = NULL;
+    push_elem(&stack_ptr, &null_ptr);
+    printf("sale\n");
+    //char* str = malloc(5);
+    //strcpy(str, "hola");
+    char* str = "hola";
+
+    //push_str(&stack_ptr, &str);
+
+    //push_elem(&stack_ptr, &str);
+
+    //printf("*stack_ptr: %s\n", stack_ptr);
+    //printf("*stack_ptr: %d\n", *(stack_ptr+4));    
+    //printf("*stack_ptr: %d\n", *(stack_ptr+8)); 
+
+    //printf("stack_ptr DESPUES: %p\n", stack_ptr);      
+
+    //printf("stack_ptr_top DESPUES %p\n", addr_stack); 
+
+/*
+    char** char_ptr = (char**) stack_ptr;
+    // Add argv to stack
+	{
+		memset(--char_ptr, 0, sizeof(char**));
+		for(int i = argc - 1; i > 0; --i)
+		{
+			*(--char_ptr) = argv[i];
+		}
+	}
+	long* long_ptr = (long*) char_ptr;
+	*(--long_ptr) = argc - 1;
+
+	return (void*) long_ptr;
+*/
+    return stack_ptr;
+
+}
+
 int main(int argc, char** argv, char** envp) {
 
     if (argc != 2) {
@@ -548,23 +676,47 @@ int main(int argc, char** argv, char** envp) {
     struct ElfHandle* handle = build_elf_handle(fptr);
 
     // debuggiemos
-    //print_elf_header(&handle->header);
-    //for (size_t i = 0; i < handle->header.e_phnum; i++) {
-    //    print_program_header(&(handle->program_header_table[i]));
-    //}
+    print_elf_header(&handle->header);
+    for (size_t i = 0; i < handle->header.e_phnum; i++) {
+        print_program_header(&(handle->program_header_table[i]));
+    }
+
+    //printf("SYMBOLS:\n");
+    //print_symbol_table(handle);
 
     // lo cargamos
     load_elf(handle);
 
+    printf("se carga bien\n");
+
     //printf("PID: %d\n", getpid());
 
     // lo ejecutamos
-
     //void (*start)(void);
     //start = (void(*)(void))(handle->header.e_entry);
     //start();
+
+    //int (*start)(void);
+    //start = (int(*)(void))(handle->header.e_entry);
+    //printf("%d\n", start());
+
+    // Setup Stack
+    int argc2 = 3;
+    char* argv2[] = {"hola", "mundo", "!"};
+
+    printf("&argv[0] en main: %p\n", &argv2[0]);
+
+	void* stack_ptr = setup_stack(argv[1], (void*)handle->header.e_entry, argc2, argv2, envp);
+
+    //printf("eSP: %p\n", (void*)stack_ptr);
+
+    asm("movl %0, %%esp\n\t" : "+r" (stack_ptr));
+	asm("movl %0, %%eax\n\t" : "+r" (handle->header.e_entry));
+	//asm("movl $0, %edx");       // estos 2 registros se setean asi por la SYSTEM V APPLICATION BINARY INTERFACE Intel386 seccion 3.28 (pg. 55)
+	//asm("movl $0, %ebp");
+	asm("jmp *%eax\n\t");	
     
-    build_symbol_table(handle);
+    //build_symbol_table(handle);
 
     //print_symbol_table(handle);
 
@@ -572,7 +724,7 @@ int main(int argc, char** argv, char** envp) {
 
     
     // ejecutamos f:
-    void (*f)(int, int);
+    //void (*f)(int, int);
     // aca estaria bueno tener una estructura de datos que le podamos decir el nombre (en este caso f) y directamente nos diga su address(value) para saltar ahi
     // algo asi: unsigned int addr = get_addr_of_symbol(handle, "f");
 /*
@@ -594,10 +746,10 @@ int main(int argc, char** argv, char** envp) {
 
     //f(2, 1); 
 
-    printf("-------------------\n");
-    print_symbol_table(handle);
+    //printf("-------------------\n");
+    //print_symbol_table(handle);
 
-    build_string_table_sections(handle);
+    //build_string_table_sections(handle);
     //for (size_t i = 0; i < handle->header.e_shnum; i++) {
     //    printf("%s\n", handle->string_table_sections + handle->section_header_table[i].sh_name);
     //}

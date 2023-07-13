@@ -1,11 +1,21 @@
+#include <stdio.h>
+
 int c;
 
-void f(int a, int b) {
-    c = a+b;
+int w = 27;
 
-    while(1) {}
+void f(int a, int b) {
+    c = a+b+w;
+
+    //while(1) {}
 }
 
-int main() {
+int main(int argc, char** argv, char** envp) {
+
+
     f(0,1);
+
+    printf("hola\n");
+    
+    return c;
 }

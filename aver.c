@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Este archivo es solo para probar cositas.
+
 char table[40] = {'\0', 't', 'e', 's', 't', '.', 'c', '\0', 
                     'f', '\0', '2', 't', '\0', '\0'};
 // idx test.c = 1
@@ -9,24 +11,20 @@ char table[40] = {'\0', 't', 'e', 's', 't', '.', 'c', '\0',
 // idx 2t = 9
 
 
-void f() {
+int* f() {
 
-    char** table_ptr = malloc(40);
-
-    memcpy(*table_ptr, table, 40);
-
-    char* s = *table_ptr + 1;
-
-    printf("S: %s\n", s);
+    int* ptr = malloc(100000);
+    return ptr;
 }
 
 int main() {
 
-    char* s_test = table + 10;
+    int* ptr = f();
 
+    ptr[10] = 272;
 
-    printf("S: %s\n", s_test);
+    printf("PID: %d\n", getpid());
 
-    f();
+    while(1) {}
 
 }
