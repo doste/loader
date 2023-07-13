@@ -594,6 +594,79 @@ void push_elem(unsigned char** sp, void** value) {
 
 }
 
+/*
+Argument strings, environment strings, and the auxiliary information appear in
+no specific order within the information block; the system makes no guarantees
+about their arrangement. The system also may leave an unspecified amount of
+memory between the null auxiliary vector entry and the beginning of the informa-
+tion block.
+
+------------------------------------------------------------- 0x7fff6c845000
+     0x7fff6c844ff8: 0x0000000000000000
+            _  4fec: './stackdump\0'                      <------+
+      env  /   4fe2: 'ENVVAR2=2\0'                               |    <----+
+           \_  4fd8: 'ENVVAR1=1\0'                               |   <---+ |
+           /   4fd4: 'two\0'                                     |       | |     <----+
+     args |    4fd0: 'one\0'                                     |       | |    <---+ |
+           \_  4fcb: 'zero\0'                                    |       | |   <--+ | |
+               3020: random gap padded to 16B boundary           |       | |      | | |
+    - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -|       | |      | | |
+               3019: 'x86_64\0'                        <-+       |       | |      | | |
+     auxv      3009: random data: ed99b6...2adcc7        | <-+   |       | |      | | |
+     data      3000: zero padding to align stack         |   |   |       | |      | | |
+    . . . . . . . . . . . . . . . . . . . . . . . . . . .|. .|. .|       | |      | | |
+               2ff0: AT_NULL(0)=0                        |   |   |       | |      | | |
+               2fe0: AT_PLATFORM(15)=0x7fff6c843019    --+   |   |       | |      | | |
+               2fd0: AT_EXECFN(31)=0x7fff6c844fec      ------|---+       | |      | | |
+               2fc0: AT_RANDOM(25)=0x7fff6c843009      ------+           | |      | | |
+      ELF      2fb0: AT_SECURE(23)=0                                     | |      | | |
+    auxiliary  2fa0: AT_EGID(14)=1000                                    | |      | | |
+     vector:   2f90: AT_GID(13)=1000                                     | |      | | |
+    (id,val)   2f80: AT_EUID(12)=1000                                    | |      | | |
+      pairs    2f70: AT_UID(11)=1000                                     | |      | | |
+               2f60: AT_ENTRY(9)=0x4010c0                                | |      | | |
+               2f50: AT_FLAGS(8)=0                                       | |      | | |
+               2f40: AT_BASE(7)=0x7ff6c1122000                           | |      | | |
+               2f30: AT_PHNUM(5)=9                                       | |      | | |
+               2f20: AT_PHENT(4)=56                                      | |      | | |
+               2f10: AT_PHDR(3)=0x400040                                 | |      | | |
+               2f00: AT_CLKTCK(17)=100                                   | |      | | |
+               2ef0: AT_PAGESZ(6)=4096                                   | |      | | |
+               2ee0: AT_HWCAP(16)=0xbfebfbff                             | |      | | |
+               2ed0: AT_SYSINFO_EHDR(33)=0x7fff6c86b000                  | |      | | |
+    . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .        | |      | | |
+               2ec8: environ[2]=(nil)                                    | |      | | |
+               2ec0: environ[1]=0x7fff6c844fe2         ------------------|-+      | | |
+               2eb8: environ[0]=0x7fff6c844fd8         ------------------+        | | |
+               2eb0: argv[3]=(nil)                                                | | |
+               2ea8: argv[2]=0x7fff6c844fd4            ---------------------------|-|-+
+               2ea0: argv[1]=0x7fff6c844fd0            ---------------------------|-+
+               2e98: argv[0]=0x7fff6c844fcb            ---------------------------+
+     0x7fff6c842e90: argc=3
+
+
+
+        The variable environ points to an array of pointers to strings
+       called the "environment".  The last pointer in this array has the
+       value NULL.  This array of strings is made available to the
+       process by the execve(2) call when a new program is started.
+       When a child process is created via fork(2), it inherits a copy
+       of its parent's environment.
+
+       By convention, the strings in environ have the form "name=value".
+       The name is case-sensitive and may not contain the character "=".
+       The value can be anything that can be represented as a string.
+       The name and the value may not contain an embedded null byte
+       ('\0'), since this is assumed to terminate the string.
+
+       Entonces los env que estan ahi arriba no son mas que strings,
+       dese environ[idx] los apuntamos
+
+*/
+
+size_t aux_vector_cant = 0; // global temporaria ahora para safar
+
+Elf32_auxv_t** ptr_globl;
 
 void* setup_stack(char* filename, void* entry_addr, int argc, char** argv, char** envp) {
     // allocamos memoria para el stack:
@@ -609,59 +682,117 @@ void* setup_stack(char* filename, void* entry_addr, int argc, char** argv, char*
     //push_int(&stack_ptr, &x);
     //x = 5;
     //push_int(&stack_ptr, &x);
-
+// argc
     int argc_cpy = argc;
     push_int(&stack_ptr, &argc_cpy);
 
     //printf("argv[0]: %s\n", argv[0]);
     //printf("&argv[0]: %p\n", &argv[0]);
-
     //push_elem(&stack_ptr, &argv[0]);
-
+// argv
     size_t i = 0;
     while(argc > 0) {
-        printf("intentando con %d\n", i);
+        //printf("intentando con %d\n", i);
         push_elem(&stack_ptr, &argv[i]);
         i++;
         argc--;
     }
     void* null_ptr = NULL;
     push_elem(&stack_ptr, &null_ptr);
-    printf("sale\n");
+    
     //char* str = malloc(5);
     //strcpy(str, "hola");
     char* str = "hola";
 
-    //push_str(&stack_ptr, &str);
+    //push_str(&stack_ptr, &str);       // este no funca
 
-    //push_elem(&stack_ptr, &str);
+    //push_elem(&stack_ptr, &str);      // este funca
 
-    //printf("*stack_ptr: %s\n", stack_ptr);
-    //printf("*stack_ptr: %d\n", *(stack_ptr+4));    
-    //printf("*stack_ptr: %d\n", *(stack_ptr+8)); 
+// environment vars:
+    for (char **env = envp; *env; ++env) {
+        //printf("%s\n", *env);
+        push_elem(&stack_ptr, env); 
+    }
+    push_elem(&stack_ptr, &null_ptr);
 
-    //printf("stack_ptr DESPUES: %p\n", stack_ptr);      
+// elf auxiliary vector:
+    /*
+    Elf32_auxv_t *auxv;
+    while (*envp++ != NULL); // *envp = NULL marks end of envp //
 
-    //printf("stack_ptr_top DESPUES %p\n", addr_stack); 
+    for (auxv = (Elf32_auxv_t *)envp; auxv->a_type != AT_NULL; auxv++)
+    // auxv->a_type = AT_NULL marks the end of auxv 
+    {
+        push_elem(&stack_ptr, auxv);
+    }
+    push_elem(&stack_ptr, &null_ptr);
+    
+     esto esta MAL! esta pusheando de a 4 bytes pero cada Elf32_auxv_t mide 8 bytes, tiene esta pinta:
+        typedef struct {
+            uint32_t a_type;              
+            union
+                {
+                uint32_t a_val;           // Integer value //
+                // We use to have pointer elements added here.  We cannot do that,
+                    though, since it does not work when using 32-bit definitions
+                    on 64-bit platforms and vice versa.  //
+                } a_un;
+        } Elf32_auxv_t;
+     entonces el codigo que esta arriba lo que esta haciendo es solo pusheando el primer miembro, lo 'recorta'
+     solo se queda con los 4 bytes correspondientes a a_type
 
-/*
-    char** char_ptr = (char**) stack_ptr;
-    // Add argv to stack
-	{
-		memset(--char_ptr, 0, sizeof(char**));
-		for(int i = argc - 1; i > 0; --i)
-		{
-			*(--char_ptr) = argv[i];
-		}
-	}
-	long* long_ptr = (long*) char_ptr;
-	*(--long_ptr) = argc - 1;
+    hay que pushearle un puntero bien, asi no lo recorta.
+    */
+    Elf32_auxv_t *auxv;
+    //Elf32_auxv_t** res = malloc(aux_vector_cant * sizeof(Elf32_auxv_t*));
+    Elf32_auxv_t** ptr_res = malloc(sizeof(Elf32_auxv_t*));
+    memset(ptr_res, 0, sizeof(Elf32_auxv_t*));
 
-	return (void*) long_ptr;
-*/
+    Elf32_auxv_t* res = malloc(sizeof(Elf32_auxv_t));
+    memset(res, 0, sizeof(Elf32_auxv_t));
+
+    while (*envp++ != NULL); // *envp = NULL marks end of envp //
+    size_t k = 0;
+    Elf32_auxv_t var;
+    for (auxv = (Elf32_auxv_t *)envp; auxv->a_type != AT_NULL; auxv++)
+    {
+        //push_elem(&stack_ptr, auxv);
+
+        var = *auxv;
+        //memcpy(res + k, &var , sizeof(Elf32_auxv_t));
+        if (k == 0) {
+            //memcpy(res, auxv , sizeof(Elf32_auxv_t));
+
+            //memcpy(ptr_res, &res, sizeof(Elf32_auxv_t*));
+            memcpy(ptr_res, &auxv, sizeof(Elf32_auxv_t*));
+        }
+
+        k++;
+    }
+
+    printf("memcpy no problem %d\n", k);
+
+    ptr_globl = ptr_res;
+
+    //for (size_t j = 0; j < aux_vector_cant; j++) {
+
+        //printf("va con %d\n", j);
+        size_t j = 0;
+        //Elf32_auxv_t aux_j = res[j];
+        //printf("res[%d] type is: %d\n",j, aux_j.a_type);
+        //printf("res[%d] val is: %p\n",j, (void*)aux_j.a_un.a_val);
+
+        Elf32_auxv_t* aux_jj = ptr_res[j];
+        printf("ptr_res[%d] type is: %d\n",j, aux_jj->a_type);
+        printf("ptr_res[%d] val is: %p\n",j, (void*)aux_jj->a_un.a_val);
+    //}
+
+    printf("SALE\n");
+    
     return stack_ptr;
 
 }
+
 
 int main(int argc, char** argv, char** envp) {
 
@@ -687,9 +818,44 @@ int main(int argc, char** argv, char** envp) {
     // lo cargamos
     load_elf(handle);
 
-    printf("se carga bien\n");
+    size_t cant = 0;
+    printf("ENVIRONMENT VARIABLES:\n");
+    for (char **env = envp; *env; ++env) {
+        cant++;
+        printf("%s\n", *env);
+        
+    }
+    printf("cant: %d\n", cant);
 
+    printf("\n\n");
+    printf("auxiliary:\n");
+    Elf32_auxv_t *auxv;
+    cant = 0;
+
+    Elf32_auxv_t* test;
+
+    char** envp_copy = envp;
+    while (*envp++ != NULL); 
+
+    for (auxv = (Elf32_auxv_t *)envp; auxv->a_type != AT_NULL; auxv++)
+        /* auxv->a_type = AT_NULL marks the end of auxv */
+    {
+        cant++;
+        if (cant == 1) {
+            test = auxv;
+            printf("it %d is: %p\n",cant, (void*)auxv->a_un.a_val);
+        }
+    }
+
+    aux_vector_cant = cant;
+    printf("cantcant: %d\n", cant);
     //printf("PID: %d\n", getpid());
+
+    //printf("SIZE OF ELF32AUX_V: %zu\n", sizeof(Elf32_auxv_t));
+    //printf("a_type: %d\n", test->a_type);
+    //printf("a_val: %p\n", test->a_un.a_val);
+
+    //void* addr = (void*)test->a_un.a_val;
 
     // lo ejecutamos
     //void (*start)(void);
@@ -706,9 +872,18 @@ int main(int argc, char** argv, char** envp) {
 
     printf("&argv[0] en main: %p\n", &argv2[0]);
 
-	void* stack_ptr = setup_stack(argv[1], (void*)handle->header.e_entry, argc2, argv2, envp);
+	void* stack_ptr = setup_stack(argv[1], (void*)handle->header.e_entry, argc2, argv2, envp_copy);
+    // uso envp_copy porque envp quedo adelantado, para obtener el aux vector
 
     //printf("eSP: %p\n", (void*)stack_ptr);
+
+    //printf("PID: %d\n", getpid());
+    //while(1) {}
+
+    Elf32_auxv_t* aux_jj = ptr_globl[0];
+    printf("ptr_globl type is: %d\n", aux_jj->a_type);
+    printf("ptr_globl val is: %p\n", (void*)aux_jj->a_un.a_val);
+
 
     asm("movl %0, %%esp\n\t" : "+r" (stack_ptr));
 	asm("movl %0, %%eax\n\t" : "+r" (handle->header.e_entry));
