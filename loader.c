@@ -175,6 +175,18 @@ void print_program_header(Elf32_Phdr* ph) {
         case PT_INTERP:
               printf("PT_INTERP\n");
               break;
+        case PT_TLS:
+              printf("PT_TLS\n");
+              break;
+        case PT_GNU_RELRO:
+              printf("PT_GNU_RELRO\n");
+              break;
+        case PT_GNU_STACK:
+              printf("PT_GNU_STACK\n");
+              break;
+        case PT_NOTE:
+            printf("PT_NOTE\n");
+            break;
         default:
               printf("unknown type\n");
               break;
@@ -587,11 +599,23 @@ void push_str(unsigned char** sp, char** value) {
 
 }
 
+size_t cant_pushes = 0;
+
 void push_elem(unsigned char** sp, void** value) {
+    cant_pushes++;
 
     *sp = *sp - 4;
     memcpy(*sp, value, sizeof(void*));
 
+}
+
+void f(Elf32_auxv_t* aux) {
+    size_t stack_size = 2 * getpagesize(); 
+    void* addr_stack = mmap(NULL, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    unsigned char* stack_ptr = (unsigned char*) addr_stack + stack_size;
+
+    push_elem(&stack_ptr, &aux);
 }
 
 /*
@@ -660,13 +684,15 @@ tion block.
        ('\0'), since this is assumed to terminate the string.
 
        Entonces los env que estan ahi arriba no son mas que strings,
-       dese environ[idx] los apuntamos
+       desde environ[idx] los apuntamos
 
 */
 
 size_t aux_vector_cant = 0; // global temporaria ahora para safar
 
 Elf32_auxv_t** ptr_globl;
+
+unsigned char* stack_ptr_globl;
 
 void* setup_stack(char* filename, void* entry_addr, int argc, char** argv, char** envp) {
     // allocamos memoria para el stack:
@@ -675,13 +701,11 @@ void* setup_stack(char* filename, void* entry_addr, int argc, char** argv, char*
 
     unsigned char* stack_ptr = (unsigned char*) addr_stack + stack_size;
 
-    //printf("stack_ptr: %p\n", stack_ptr);      // 0xf7f24000
-    //printf("stack_ptr_top %p\n", addr_stack);  // 0xf7f14000
+    stack_ptr_globl = stack_ptr;
 
-    //int x = 7;
-    //push_int(&stack_ptr, &x);
-    //x = 5;
-    //push_int(&stack_ptr, &x);
+    printf("inicialmente stack_ptr: %p\n", stack_ptr);      // 0xf7f24000
+    printf("inicialmente stack_ptr_top %p\n", addr_stack);  // 0xf7f14000
+
 // argc
     int argc_cpy = argc;
     push_int(&stack_ptr, &argc_cpy);
@@ -745,11 +769,12 @@ void* setup_stack(char* filename, void* entry_addr, int argc, char** argv, char*
     */
     Elf32_auxv_t *auxv;
     //Elf32_auxv_t** res = malloc(aux_vector_cant * sizeof(Elf32_auxv_t*));
-    Elf32_auxv_t** ptr_res = malloc(sizeof(Elf32_auxv_t*));
-    memset(ptr_res, 0, sizeof(Elf32_auxv_t*));
+    //Elf32_auxv_t** ptr_res = malloc(sizeof(Elf32_auxv_t*));
+    Elf32_auxv_t** ptr_res = malloc(aux_vector_cant * sizeof(Elf32_auxv_t*));
+    memset(ptr_res, 0, aux_vector_cant * sizeof(Elf32_auxv_t*));
 
-    Elf32_auxv_t* res = malloc(sizeof(Elf32_auxv_t));
-    memset(res, 0, sizeof(Elf32_auxv_t));
+    //Elf32_auxv_t* res = malloc(sizeof(Elf32_auxv_t));
+    //memset(res, 0, sizeof(Elf32_auxv_t));
 
     while (*envp++ != NULL); // *envp = NULL marks end of envp //
     size_t k = 0;
@@ -758,17 +783,25 @@ void* setup_stack(char* filename, void* entry_addr, int argc, char** argv, char*
     {
         //push_elem(&stack_ptr, auxv);
 
-        var = *auxv;
+        //var = *auxv;
         //memcpy(res + k, &var , sizeof(Elf32_auxv_t));
-        if (k == 0) {
+        //if (k == 2) {
+        //if (auxv->a_type == AT_PAGESZ) {
             //memcpy(res, auxv , sizeof(Elf32_auxv_t));
-
             //memcpy(ptr_res, &res, sizeof(Elf32_auxv_t*));
-            memcpy(ptr_res, &auxv, sizeof(Elf32_auxv_t*));
-        }
 
+        memcpy(ptr_res+k, &auxv, sizeof(Elf32_auxv_t*));
+        
+        push_elem(&stack_ptr, ptr_res+k);
+        //}   
         k++;
     }
+
+    //push_elem(&stack_ptr, &null_ptr);
+    // pusheamos la null entry del vector, para delimitar donde termina
+    assert(auxv->a_type == AT_NULL);
+    memcpy(ptr_res+k, &auxv, sizeof(Elf32_auxv_t*));
+    push_elem(&stack_ptr, ptr_res+k);
 
     printf("memcpy no problem %d\n", k);
 
@@ -777,7 +810,7 @@ void* setup_stack(char* filename, void* entry_addr, int argc, char** argv, char*
     //for (size_t j = 0; j < aux_vector_cant; j++) {
 
         //printf("va con %d\n", j);
-        size_t j = 0;
+        size_t j = 3;
         //Elf32_auxv_t aux_j = res[j];
         //printf("res[%d] type is: %d\n",j, aux_j.a_type);
         //printf("res[%d] val is: %p\n",j, (void*)aux_j.a_un.a_val);
@@ -789,6 +822,17 @@ void* setup_stack(char* filename, void* entry_addr, int argc, char** argv, char*
 
     printf("SALE\n");
     
+
+    // el stack_ptr quedo re abajo por todos los pushes, la ABI dice que
+    // el esp tiene que quedar apuntando al 'bottom of the stack' y por como lo usara
+    // _start, podemos suponer que esto sera donde esta el argc pusheado.
+    // osea lo primero de todo.
+    // lo reestablecemos:
+    stack_ptr = (unsigned char*) addr_stack + stack_size;
+
+    printf("finalmente stack_ptr: %p\n", stack_ptr);      
+    printf("finalmente stack_ptr_top %p\n", addr_stack);
+
     return stack_ptr;
 
 }
@@ -847,6 +891,8 @@ int main(int argc, char** argv, char** envp) {
         }
     }
 
+    f(test);
+
     aux_vector_cant = cant;
     printf("cantcant: %d\n", cant);
     //printf("PID: %d\n", getpid());
@@ -880,16 +926,31 @@ int main(int argc, char** argv, char** envp) {
     //printf("PID: %d\n", getpid());
     //while(1) {}
 
+    printf("PUSHES %zu\n", cant_pushes);
+
     Elf32_auxv_t* aux_jj = ptr_globl[0];
     printf("ptr_globl type is: %d\n", aux_jj->a_type);
     printf("ptr_globl val is: %p\n", (void*)aux_jj->a_un.a_val);
 
 
+    printf(" stack_ptr ERA: %p\n", stack_ptr);      
+
+    //stack_ptr = stack_ptr - 4;
+
+    printf(" stack_ptr va para esp como %p\n", stack_ptr);
+
+    printf(" stack_ptr_global vale %p\n", stack_ptr_globl);
+
     asm("movl %0, %%esp\n\t" : "+r" (stack_ptr));
 	asm("movl %0, %%eax\n\t" : "+r" (handle->header.e_entry));
-	//asm("movl $0, %edx");       // estos 2 registros se setean asi por la SYSTEM V APPLICATION BINARY INTERFACE Intel386 seccion 3.28 (pg. 55)
-	//asm("movl $0, %ebp");
+	asm("movl $0, %edx");       // estos 2 registros se setean asi por la SYSTEM V APPLICATION BINARY INTERFACE Intel386 seccion 3.28 (pg. 55)
+    asm("movl $0, %ebp");
+    //printf("por saltar!!! a %p\n", (void*)handle->header.e_entry);
 	asm("jmp *%eax\n\t");	
+
+    //int (*start)(void);
+    //start = (int(*)(void))(handle->header.e_entry);
+    //printf("%d\n", start());
     
     //build_symbol_table(handle);
 
